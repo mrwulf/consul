@@ -60,6 +60,64 @@ func TestCatalog_Nodes(t *testing.T) {
 	})
 }
 
+func TestCatalog_Nodes_MetaFilter(t *testing.T) {
+	meta := map[string]string{"somekey": "somevalue"}
+	c, s := makeClientWithConfig(t, nil, func(conf *testutil.TestServerConfig) {
+		conf.NodeMeta = meta
+	})
+	defer s.Stop()
+
+	catalog := c.Catalog()
+
+	// Make sure we get the node back when filtering by its metadata
+	testutil.WaitForResult(func() (bool, error) {
+		nodes, meta, err := catalog.Nodes(&QueryOptions{NodeMeta: meta})
+		if err != nil {
+			return false, err
+		}
+
+		if meta.LastIndex == 0 {
+			return false, fmt.Errorf("Bad: %v", meta)
+		}
+
+		if len(nodes) == 0 {
+			return false, fmt.Errorf("Bad: %v", nodes)
+		}
+
+		if _, ok := nodes[0].TaggedAddresses["wan"]; !ok {
+			return false, fmt.Errorf("Bad: %v", nodes[0])
+		}
+
+		if v, ok := nodes[0].Meta["somekey"]; !ok || v != "somevalue" {
+			return false, fmt.Errorf("Bad: %v", nodes[0].Meta)
+		}
+
+		return true, nil
+	}, func(err error) {
+		t.Fatalf("err: %s", err)
+	})
+
+	// Get nothing back when we use an invalid filter
+	testutil.WaitForResult(func() (bool, error) {
+		nodes, meta, err := catalog.Nodes(&QueryOptions{NodeMeta: map[string]string{"nope":"nope"}})
+		if err != nil {
+			return false, err
+		}
+
+		if meta.LastIndex == 0 {
+			return false, fmt.Errorf("Bad: %v", meta)
+		}
+
+		if len(nodes) != 0 {
+			return false, fmt.Errorf("Bad: %v", nodes)
+		}
+
+		return true, nil
+	}, func(err error) {
+		t.Fatalf("err: %s", err)
+	})
+}
+
 func TestCatalog_Services(t *testing.T) {
 	t.Parallel()
 	c, s := makeClient(t)
@@ -78,6 +136,56 @@ func TestCatalog_Services(t *testing.T) {
 		}
 
 		if len(services) == 0 {
+			return false, fmt.Errorf("Bad: %v", services)
+		}
+
+		return true, nil
+	}, func(err error) {
+		t.Fatalf("err: %s", err)
+	})
+}
+
+func TestCatalog_Services_NodeMetaFilter(t *testing.T) {
+	meta := map[string]string{"somekey": "somevalue"}
+	c, s := makeClientWithConfig(t, nil, func(conf *testutil.TestServerConfig) {
+		conf.NodeMeta = meta
+	})
+	defer s.Stop()
+
+	catalog := c.Catalog()
+
+	// Make sure we get the service back when filtering by the node's metadata
+	testutil.WaitForResult(func() (bool, error) {
+		services, meta, err := catalog.Services(&QueryOptions{NodeMeta: meta})
+		if err != nil {
+			return false, err
+		}
+
+		if meta.LastIndex == 0 {
+			return false, fmt.Errorf("Bad: %v", meta)
+		}
+
+		if len(services) == 0 {
+			return false, fmt.Errorf("Bad: %v", services)
+		}
+
+		return true, nil
+	}, func(err error) {
+		t.Fatalf("err: %s", err)
+	})
+
+	// Get nothing back when using an invalid filter
+	testutil.WaitForResult(func() (bool, error) {
+		services, meta, err := catalog.Services(&QueryOptions{NodeMeta: map[string]string{"nope":"nope"}})
+		if err != nil {
+			return false, err
+		}
+
+		if meta.LastIndex == 0 {
+			return false, fmt.Errorf("Bad: %v", meta)
+		}
+
+		if len(services) != 0 {
 			return false, fmt.Errorf("Bad: %v", services)
 		}
 
