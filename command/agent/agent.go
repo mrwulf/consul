@@ -27,6 +27,7 @@ import (
 	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/serf/coordinate"
 	"github.com/hashicorp/serf/serf"
+	"github.com/shirou/gopsutil/host"
 )
 
 const (
@@ -209,7 +210,6 @@ func Create(config *Config, logOutput io.Writer, logWriter *logger.LogWriter,
 		shutdownCh:     make(chan struct{}),
 		endpoints:      make(map[string]string),
 	}
-
 	if err := agent.resolveTmplAddrs(); err != nil {
 		return nil, err
 	}
@@ -220,6 +220,12 @@ func Create(config *Config, logOutput io.Writer, logWriter *logger.LogWriter,
 		return nil, err
 	}
 	agent.acls = acls
+
+	// Retrieve or generate the node ID before setting up the rest of the
+	// agent, which depends on it.
+	if err := agent.setupNodeID(config); err != nil {
+		return nil, fmt.Errorf("Failed to setup node ID: %v", err)
+	}
 
 	// Initialize the local state.
 	agent.state.Init(config, agent.logger)
@@ -246,11 +252,14 @@ func Create(config *Config, logOutput io.Writer, logWriter *logger.LogWriter,
 		return nil, err
 	}
 
-	// Load checks/services.
+	// Load checks/services/metadata.
 	if err := agent.loadServices(config); err != nil {
 		return nil, err
 	}
 	if err := agent.loadChecks(config); err != nil {
+		return nil, err
+	}
+	if err := agent.loadMetadata(config); err != nil {
 		return nil, err
 	}
 
@@ -284,6 +293,9 @@ func (a *Agent) consulConfig() *consul.Config {
 	} else {
 		base = consul.DefaultConfig()
 	}
+
+	// This is set when the agent starts up
+	base.NodeID = a.config.NodeID
 
 	// Apply dev mode
 	base.DevMode = a.config.DevMode
@@ -418,6 +430,7 @@ func (a *Agent) consulConfig() *consul.Config {
 	base.KeyFile = a.config.KeyFile
 	base.ServerName = a.config.ServerName
 	base.Domain = a.config.Domain
+	base.TLSMinVersion = a.config.TLSMinVersion
 
 	// Setup the ServerUp callback
 	base.ServerUp = a.state.ConsulServerUp
@@ -579,6 +592,102 @@ func (a *Agent) setupClient() error {
 		return fmt.Errorf("Failed to start Consul client: %v", err)
 	}
 	a.client = client
+	return nil
+}
+
+// makeRandomID will generate a random UUID for a node.
+func (a *Agent) makeRandomID() (string, error) {
+	id, err := uuid.GenerateUUID()
+	if err != nil {
+		return "", err
+	}
+
+	a.logger.Printf("[DEBUG] Using random ID %q as node ID", id)
+	return id, nil
+}
+
+// makeNodeID will try to find a host-specific ID, or else will generate a
+// random ID. The returned ID will always be formatted as a GUID. We don't tell
+// the caller whether this ID is random or stable since the consequences are
+// high for us if this changes, so we will persist it either way. This will let
+// gopsutil change implementations without affecting in-place upgrades of nodes.
+func (a *Agent) makeNodeID() (string, error) {
+	// Try to get a stable ID associated with the host itself.
+	info, err := host.Info()
+	if err != nil {
+		a.logger.Printf("[DEBUG] Couldn't get a unique ID from the host: %v", err)
+		return a.makeRandomID()
+	}
+
+	// Make sure the host ID parses as a UUID, since we don't have complete
+	// control over this process.
+	id := strings.ToLower(info.HostID)
+	if _, err := uuid.ParseUUID(id); err != nil {
+		a.logger.Printf("[DEBUG] Unique ID %q from host isn't formatted as a UUID: %v",
+			id, err)
+		return a.makeRandomID()
+	}
+
+	a.logger.Printf("[DEBUG] Using unique ID %q from host as node ID", id)
+	return id, nil
+}
+
+// setupNodeID will pull the persisted node ID, if any, or create a random one
+// and persist it.
+func (a *Agent) setupNodeID(config *Config) error {
+	// If they've configured a node ID manually then just use that, as
+	// long as it's valid.
+	if config.NodeID != "" {
+		if _, err := uuid.ParseUUID(string(config.NodeID)); err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	// For dev mode we have no filesystem access so just make one.
+	if a.config.DevMode {
+		id, err := a.makeNodeID()
+		if err != nil {
+			return err
+		}
+
+		config.NodeID = types.NodeID(id)
+		return nil
+	}
+
+	// Load saved state, if any. Since a user could edit this, we also
+	// validate it.
+	fileID := filepath.Join(config.DataDir, "node-id")
+	if _, err := os.Stat(fileID); err == nil {
+		rawID, err := ioutil.ReadFile(fileID)
+		if err != nil {
+			return err
+		}
+
+		nodeID := strings.TrimSpace(string(rawID))
+		if _, err := uuid.ParseUUID(nodeID); err != nil {
+			return err
+		}
+
+		config.NodeID = types.NodeID(nodeID)
+	}
+
+	// If we still don't have a valid node ID, make one.
+	if config.NodeID == "" {
+		id, err := a.makeNodeID()
+		if err != nil {
+			return err
+		}
+		if err := lib.EnsurePath(fileID, false); err != nil {
+			return err
+		}
+		if err := ioutil.WriteFile(fileID, []byte(id), 0600); err != nil {
+			return err
+		}
+
+		config.NodeID = types.NodeID(id)
+	}
 	return nil
 }
 
@@ -1675,6 +1784,39 @@ func (a *Agent) restoreCheckState(snap map[types.CheckID]*structs.HealthCheck) {
 	for id, check := range snap {
 		a.state.UpdateCheck(id, check.Status, check.Output)
 	}
+}
+
+// loadMetadata loads node metadata fields from the agent config and
+// updates them on the local agent.
+func (a *Agent) loadMetadata(conf *Config) error {
+	a.state.Lock()
+	defer a.state.Unlock()
+
+	for key, value := range conf.Meta {
+		a.state.metadata[key] = value
+	}
+
+	a.state.changeMade()
+
+	return nil
+}
+
+// parseMetaPair parses a key/value pair of the form key:value
+func parseMetaPair(raw string) (string, string) {
+	pair := strings.SplitN(raw, ":", 2)
+	if len(pair) == 2 {
+		return pair[0], pair[1]
+	} else {
+		return pair[0], ""
+	}
+}
+
+// unloadMetadata resets the local metadata state
+func (a *Agent) unloadMetadata() {
+	a.state.Lock()
+	defer a.state.Unlock()
+
+	a.state.metadata = make(map[string]string)
 }
 
 // serviceMaintCheckID returns the ID of a given service's maintenance check

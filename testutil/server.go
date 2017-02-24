@@ -13,6 +13,7 @@ package testutil
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/consul/consul/structs"
@@ -53,6 +55,7 @@ type TestAddressConfig struct {
 // TestServerConfig is the main server configuration struct.
 type TestServerConfig struct {
 	NodeName          string                 `json:"node_name"`
+	NodeMeta          map[string]string      `json:"node_meta,omitempty"`
 	Performance       *TestPerformanceConfig `json:"performance,omitempty"`
 	Bootstrap         bool                   `json:"bootstrap,omitempty"`
 	Server            bool                   `json:"server,omitempty"`
@@ -164,7 +167,8 @@ func NewTestServer(t TestingT) *TestServer {
 // an optional callback function to modify the configuration.
 func NewTestServerConfig(t TestingT, cb ServerConfigCallback) *TestServer {
 	if path, err := exec.LookPath("consul"); err != nil || path == "" {
-		t.Skip("consul not found on $PATH, skipping")
+		t.Fatal("consul not found on $PATH - download and install " +
+			"consul or skip this test")
 	}
 
 	dataDir, err := ioutil.TempDir("", "consul")
@@ -220,7 +224,7 @@ func NewTestServerConfig(t TestingT, cb ServerConfigCallback) *TestServer {
 	if strings.HasPrefix(consulConfig.Addresses.HTTP, "unix://") {
 		httpAddr = consulConfig.Addresses.HTTP
 		trans := cleanhttp.DefaultTransport()
-		trans.Dial = func(_, _ string) (net.Conn, error) {
+		trans.DialContext = func(_ context.Context, _, _ string) (net.Conn, error) {
 			return net.Dial("unix", httpAddr[7:])
 		}
 		client = &http.Client{
@@ -290,10 +294,13 @@ func (s *TestServer) waitForAPI() {
 // waitForLeader waits for the Consul server's HTTP API to become
 // available, and then waits for a known leader and an index of
 // 1 or more to be observed to confirm leader election is done.
+// It then waits to ensure the anti-entropy sync has completed.
 func (s *TestServer) waitForLeader() {
+	var index int64
 	WaitForResult(func() (bool, error) {
-		// Query the API and check the status code
-		resp, err := s.HttpClient.Get(s.url("/v1/catalog/nodes"))
+		// Query the API and check the status code.
+		url := s.url(fmt.Sprintf("/v1/catalog/nodes?index=%d&wait=2s", index))
+		resp, err := s.HttpClient.Get(url)
 		if err != nil {
 			return false, err
 		}
@@ -302,13 +309,33 @@ func (s *TestServer) waitForLeader() {
 			return false, err
 		}
 
-		// Ensure we have a leader and a node registration
+		// Ensure we have a leader and a node registration.
 		if leader := resp.Header.Get("X-Consul-KnownLeader"); leader != "true" {
-			fmt.Println(leader)
 			return false, fmt.Errorf("Consul leader status: %#v", leader)
 		}
-		if resp.Header.Get("X-Consul-Index") == "0" {
+		index, err = strconv.ParseInt(resp.Header.Get("X-Consul-Index"), 10, 64)
+		if err != nil {
+			return false, fmt.Errorf("Consul index was bad: %v", err)
+		}
+		if index == 0 {
 			return false, fmt.Errorf("Consul index is 0")
+		}
+
+		// Watch for the anti-entropy sync to finish.
+		var parsed []map[string]interface{}
+		dec := json.NewDecoder(resp.Body)
+		if err := dec.Decode(&parsed); err != nil {
+			return false, err
+		}
+		if len(parsed) < 1 {
+			return false, fmt.Errorf("No nodes")
+		}
+		taggedAddresses, ok := parsed[0]["TaggedAddresses"].(map[string]interface{})
+		if !ok {
+			return false, fmt.Errorf("Missing tagged addresses")
+		}
+		if _, ok := taggedAddresses["lan"]; !ok {
+			return false, fmt.Errorf("No lan tagged addresses")
 		}
 		return true, nil
 	}, func(err error) {

@@ -216,7 +216,12 @@ func GetAllInterfaces() (IfAddrs, error) {
 // GetDefaultInterfaces returns IfAddrs of the addresses attached to the default
 // route.
 func GetDefaultInterfaces() (IfAddrs, error) {
-	defaultIfName, err := getDefaultIfName()
+	ri, err := NewRouteInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	defaultIfName, err := ri.GetDefaultInterfaceName()
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +240,7 @@ func GetDefaultInterfaces() (IfAddrs, error) {
 // GetPrivateInterfaces returns an IfAddrs that are part of RFC 6890 and have a
 // default route.  If the system can't determine its IP address or find an RFC
 // 6890 IP address, an empty IfAddrs will be returned instead.  This function is
-// the `eval` equivilant of:
+// the `eval` equivalent of:
 //
 // ```
 // $ sockaddr eval -r '{{GetDefaultInterfaces | include "type" "ip" | include "flags" "forwardable|up" | sort "type,size" | include "RFC" "6890" }}'
@@ -277,7 +282,7 @@ func GetPrivateInterfaces() (IfAddrs, error) {
 // GetPublicInterfaces returns an IfAddrs that are NOT part of RFC 6890 and has a
 // default route.  If the system can't determine its IP address or find a non
 // RFC 6890 IP address, an empty IfAddrs will be returned instead.  This
-// function is the `eval` equivilant of:
+// function is the `eval` equivalent of:
 //
 // ```
 // $ sockaddr eval -r '{{GetDefaultInterfaces | include "type" "ip" | include "flags" "forwardable|up" | sort "type,size" | exclude "RFC" "6890" }}'
@@ -849,9 +854,9 @@ func OffsetIfAddrs(off int, in IfAddrs) (IfAddrs, error) {
 	}
 
 	if end {
-		return in[len(in)-off : len(in)], nil
+		return in[len(in)-off:], nil
 	}
-	return in[off:len(in)], nil
+	return in[off:], nil
 }
 
 func (ifAddr IfAddr) String() string {

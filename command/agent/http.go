@@ -62,7 +62,9 @@ func NewHTTPServers(agent *Agent, config *Config, logOutput io.Writer) ([]*HTTPS
 			CertFile:       config.CertFile,
 			KeyFile:        config.KeyFile,
 			NodeName:       config.NodeName,
-			ServerName:     config.ServerName}
+			ServerName:     config.ServerName,
+			TLSMinVersion:  config.TLSMinVersion,
+		}
 
 		tlsConfig, err := tlsConf.IncomingTLSConfig()
 		if err != nil {
@@ -582,6 +584,20 @@ func (s *HTTPServer) parseSource(req *http.Request, source *structs.QuerySource)
 			source.Node = node
 		}
 	}
+}
+
+// parseMetaFilter is used to parse the ?node-meta=key:value query parameter, used for
+// filtering results to nodes with the given metadata key/value
+func (s *HTTPServer) parseMetaFilter(req *http.Request) map[string]string {
+	if filterList, ok := req.URL.Query()["node-meta"]; ok {
+		filters := make(map[string]string)
+		for _, filter := range filterList {
+			key, value := parseMetaPair(filter)
+			filters[key] = value
+		}
+		return filters
+	}
+	return nil
 }
 
 // parse is a convenience method for endpoints that need

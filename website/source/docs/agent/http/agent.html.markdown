@@ -128,6 +128,8 @@ This endpoint is used to return the configuration and member information of the 
 
 Consul 0.7.0 and later also includes a snapshot of various operating statistics under the `Stats` key. These statistics are intended to help human operators for debugging and may change over time, so this part of the interface should not be consumed programmatically.
 
+Consul 0.7.3 and later also includes a block of user-defined node metadata values under the `Meta` key. These are arbitrary key/value pairs defined in the [node meta](/docs/agent/options.html#_node_meta) section of the agent configuration.
+
 It returns a JSON body like this:
 
 ```javascript
@@ -141,6 +143,7 @@ It returns a JSON body like this:
     "DNSRecursors": [],
     "Domain": "consul.",
     "LogLevel": "INFO",
+    "NodeID": "40e4a748-2192-161a-0510-9bf59fe950b5",
     "NodeName": "foobar",
     "ClientAddr": "127.0.0.1",
     "BindAddr": "0.0.0.0",
@@ -181,6 +184,7 @@ It returns a JSON body like this:
     "Tags": {
       "bootstrap": "1",
       "dc": "dc1",
+      "id": "40e4a748-2192-161a-0510-9bf59fe950b5",
       "port": "8300",
       "role": "consul",
       "vsn": "1",
@@ -194,6 +198,10 @@ It returns a JSON body like this:
     "DelegateMin": 2,
     "DelegateMax": 4,
     "DelegateCur": 4
+  },
+  "Meta": {
+    "instance_type": "i2.xlarge",
+    "os_version": "ubuntu_16.04",
   }
 }
 ```
@@ -212,10 +220,11 @@ The return code is 200 on success.
 
 ### <a name="agent_maintenance"></a> /v1/agent/maintenance
 
-The node maintenance endpoint can place the agent into "maintenance mode".
-During maintenance mode, the node will be marked as unavailable and will not be
-present in DNS or API queries. This API call is idempotent. Maintenance mode is
-persistent and will be automatically restored on agent restart.
+The node maintenance endpoint is hit with a PUT and is used to place the agent
+into "maintenance mode". During maintenance mode, the node will be marked as
+unavailable and will not be present in DNS or API queries. This API call is
+idempotent. Maintenance mode is persistent and will be automatically restored
+on agent restart.
 
 The `?enable` flag is required. Acceptable values are either `true` (to enter
 maintenance mode) or `false` (to resume normal operation).

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/consul/tlsutil"
+	"github.com/hashicorp/consul/types"
 	"github.com/hashicorp/memberlist"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/serf/serf"
@@ -65,6 +66,9 @@ type Config struct {
 
 	// DevMode is used to enable a development server mode.
 	DevMode bool
+
+	// NodeID is a unique identifier for this node across space and time.
+	NodeID types.NodeID
 
 	// Node name is the name we use to advertise. Defaults to hostname.
 	NodeName string
@@ -139,6 +143,9 @@ type Config struct {
 	// ServerName is used with the TLS certificate to ensure the name we
 	// provide matches the certificate
 	ServerName string
+
+	// TLSMinVersion is used to set the minimum TLS version used for TLS connections.
+	TLSMinVersion string
 
 	// RejoinAfterLeave controls our interaction with Serf.
 	// When set to false (default), a leave causes a Consul to not rejoin
@@ -337,6 +344,8 @@ func DefaultConfig() *Config {
 		// bit longer to try to cover that period. This should be more
 		// than enough when running in the high performance mode.
 		RPCHoldTimeout: 7 * time.Second,
+
+		TLSMinVersion: "tls10",
 	}
 
 	// Increase our reap interval to 3 days instead of 24h.
@@ -390,6 +399,7 @@ func (c *Config) tlsConfig() *tlsutil.Config {
 		NodeName:             c.NodeName,
 		ServerName:           c.ServerName,
 		Domain:               c.Domain,
+		TLSMinVersion:        c.TLSMinVersion,
 	}
 	return tlsConf
 }
